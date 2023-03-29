@@ -46,7 +46,6 @@ contract LoopOfInfinity is ReentrancyGuard {
     
     // State variables
     uint256 public criticalData; // State variable to hold critical data
-    bool private locked; // Boolean variable to prevent reentrancy attacks
 
     // @dev Modifier to restrict access to functions only to the contract owner
     modifier onlyOwner() {
@@ -232,16 +231,17 @@ function isCentralizedExchange(address _address) internal view returns (bool) {
 
 // Calculate the required gas limit based on the current total supply
 function calculateGasLimit(uint256 _value) public view returns (uint256) {
-    uint256 totalSupply = totalSupply();
-    uint256 requiredGas = 100000 + (totalSupply / 10000) * 10000;
+    uint256 _totalSupply = totalSupply();
+    uint256 requiredGas = 100000 + (_totalSupply / 10000) * 10000;
     uint256 remainingGas = gasleft();
+    
     if (remainingGas > requiredGas) {
         return requiredGas;
     } else {
         return remainingGas;
 
-// Check for gas limit
-require(msg.value >= calculateGasLimit(_value), "Insufficient gas");
+        // Check for gas limit
+        require(msg.value >= calculateGasLimit(_value), "Insufficient gas");
 
         // Update balances
         balanceOf[msg.sender] = balanceOf[msg.sender].sub(_value);
@@ -254,3 +254,6 @@ require(msg.value >= calculateGasLimit(_value), "Insufficient gas");
 
 fallback() external payable {
     revert("Fallback function not allowed");
+
+}
+}
