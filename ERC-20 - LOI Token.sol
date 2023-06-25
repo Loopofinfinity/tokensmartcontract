@@ -1,330 +1,395 @@
 // SPDX-License-Identifier: MIT
+
 pragma solidity 0.8.19;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-interface IUSDT {
-    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-}
-
-contract LOIPreIEO is Ownable {
+contract LoopOfInfinity is ReentrancyGuard {
     using SafeMath for uint256;
 
-    // Custom error for when the LOI token is not active
-    error LOINotActive();
+string public name = "Loop Of Infinity";
+string public symbol = "LOI";
+uint8 public decimals = 18;
+uint256 public totalSupply = 45e9 * 1e18; // initial supply of 45 billion
+uint256 public maxSupply = 50e9 * 1e18; // maximum supply of 50 billion
+uint256 private constant LOCKUP_PERIOD = 86400; // 1 day in seconds
+uint256 private _lastEmergencyStopTime;
+uint256 private _lastReleaseTime;
 
-    // LOI Token Contract Address
-    address public LOIContract;
 
-    // USDT Token Contract Address
-    address public USDTContract;
+mapping(address => uint256) private _balances; // mapping is used to store the balance of each user's tokens.
+mapping(address => mapping(address => uint256)) private _allowances; // the allowances mapping is used to store the approved amount of tokens that another address is allowed to transfer on behalf of the owner. The 
+mapping(address => uint256) private _lastDepositTime; // is used to store the timestamp of the last deposit made by a user, which is used to determine if tokens are still locked up during a withdrawal.
+mapping(bytes32 => bool) public _auditTrail; /**
+ * @dev The `AuditTrail` event is emitted every time a deposit or a withdrawal is made.
+ * The `auditTrail` mapping can be used to keep track of all the audit trails.
+ * Each audit trail contains a hash of the transaction data, including the type of transaction (deposit or withdrawal),
+ * the user's address, the amount of tokens, and the timestamp.
+ * This provides an immutable record of all the deposits and withdrawals made in the contract, which can be useful for
+ * auditing purposes.
+ */
 
-    // Whitelisted Investors
-    mapping(address => bool) public whitelist;
-    mapping(address => uint256) public vestedAmount;
-    mapping(address => uint256) public vestingStart;
+// Anti-whale system: maximum transfer amount of 250 million tokens per transaction
+uint256 private maxTxAmount = 250e6 * 1e18;
+uint256 private maxTransferPeriod = 1 days; // the maximum time period for a user to transfer tokens
 
-    // Maximum Number of Investors
-    uint256 public maxInvestors = 10000;
+address private _owner;
+bool private _paused;
+bool private _emergencyStop;
+bool private _releaseStopped;
 
-    // Maximum Investment per User
-    uint256 public maxInvestment = 10000 * 10 ** 18; // $10,000
+event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+event Paused(address account);
+event Unpaused(address account);
+event AuditTrail(bytes32 indexed auditHash); 
+event EmergencyStop();
+event Release();
 
-    // Minimum Investment per User
-    uint256 public minInvestment = 10 * 10 ** 18; // $10
-
-    // Total Tokens for Pre-sale
-    uint256 public totalTokens;
-
-    // Tokens Sold in Pre-sale
-    uint256 public tokensSold;
-
-    // Pre-IEO Round Status
-    bool public preIEOActive;
-
-    // Time-lock mechanism
-    uint256 public destroyTime;
-
-    // Vesting period duration in seconds
-    uint256 public vestingPeriod = 90 days; // 3 months
-
-    // Vesting cliff duration in seconds
-    uint256 public constant vestingCliff = 30 days; // 1 month
-
-    // Token price
-    uint256 public tokenPrice = 8000000000000000000; // $0.0080 per token, in USDT
-
-    // Investor counter
-    uint256 public investorCount;
-
-    // Events
-    event TokensPurchased(address indexed investor, uint256 amount);
-    event VestingStarted(address indexed investor, uint256 vestedAmount, uint256 vestingStart);
-
-    // Mapping to track the owner of each vested token
-    mapping(address => mapping(uint256 => address)) public vestedTokenOwners;
-
-    constructor(address _owner, address _LOIContract) {
-        LOIContract = _LOIContract;
-        investorCount = 0;
-        transferOwnership(_owner);
-    }
-
-    modifier isPreIEOActive() {
-        if (!preIEOActive)
-            revert LOINotActive();
-        _;
-    }
-
-    modifier isWhitelisted() {
-    require(whitelist[msg.sender], "Investor not whitelisted");
+modifier onlyOwner() {
+    require(msg.sender == _owner, "Caller is not the owner");
     _;
 }
 
-    modifier onlyOwnerOfVestedTokens(address _investor) {
-        if (msg.sender != _investor)
-            revert LOINotActive();
+modifier whenNotPaused() {
+    require(!_paused || msg.sender == _owner, "Contract is paused");
+    _;
+}
+
+modifier whenNotPausedAndNotOwner() {
+    require(!_paused || msg.sender != _owner, "Contract is paused");
+    _;
+}
+
+  modifier whenNotStopped() {
+        require(!_emergencyStop, "Contract is stopped");
         _;
     }
 
-    modifier isVestingActive(address investor) {
-        if (block.timestamp < destroyTime || vestedAmount[investor] == 0)
-            revert LOINotActive();
+      modifier whenStopped() {
+        require(_emergencyStop, "Contract is not stopped");
         _;
     }
-// Set the USDT Token Contract Address
-function setUSDTContract(address _USDTContract) external onlyOwner {
-    require(_USDTContract != address(0), "Invalid USDT contract address");
-    USDTContract = _USDTContract;
-}
 
-    // Set the LOI Token Contract Address
-    function setLOIContract(address _LOIContract) external onlyOwner {
-    require(_LOIContract != address(0), "Invalid LOI contract address");
-    LOIContract = _LOIContract;
-}
-
-    // Whitelist an Investor
-    function whitelistInvestor(address _investor) external onlyOwner {
-    require(_investor != address(0), "Invalid investor address");
-    whitelist[_investor] = true;
-}
-
-    // Remove an Investor from Whitelist
-    function removeInvestorFromWhitelist(address _investor) external onlyOwner {
-    require(_investor != address(0), "Invalid investor address");
-    whitelist[_investor] = false;
-}
-
-    // Set the Maximum Number of Investors
-    function setMaxInvestors(uint256 _maxInvestors) external onlyOwner {
-        maxInvestors = _maxInvestors;
+    modifier whenReleaseStopped() {
+        require(!_releaseStopped, "Release is already stopped");
+        _;
     }
 
-    // Set the Maximum Investment per User
-    function setMaxInvestment(uint256 _maxInvestment) external onlyOwner {
-        maxInvestment = _maxInvestment;
+ constructor() {
+        _owner = msg.sender;
+        _balances[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
     }
 
-    // Set the Minimum Investment per User
-    function setMinInvestment(uint256 _minInvestment) external onlyOwner {
-        minInvestment = _minInvestment;
+function _fallback() external payable {
+    if (msg.value > 0) {
+        // send back the ether
+        (bool success,) = msg.sender.call{value: msg.value}("");
+        require(success, "Failed to return ETH");
+    }
+    else {
+        revert("Invalid transaction");
+    }
+}
+
+function pause() external onlyOwner {
+    require(!_paused, "Contract is already paused");
+    _paused = true;
+    emit Paused(msg.sender);
+}
+
+function unpause() external onlyOwner {
+    require(_paused, "Contract is not paused");
+    _paused = false;
+    emit Unpaused(msg.sender);
+}
+
+  function emergencyStop() external onlyOwner whenNotStopped {
+    require(!_emergencyStop, "Contract is already stopped");
+    require(block.timestamp >= _lastEmergencyStopTime + LOCKUP_PERIOD, "Cannot stop contract again yet");
+
+    _emergencyStop = true;
+    _lastEmergencyStopTime = block.timestamp;
+    emit EmergencyStop();
+}
+
+ function release() external onlyOwner whenNotPaused whenNotStopped {
+    require(!_emergencyStop, "Contract is stopped");
+    require(!_releaseStopped, "Release is already stopped");
+    require(block.timestamp >= _lastReleaseTime + LOCKUP_PERIOD, "Cannot release tokens yet");
+
+    _releaseStopped = true;
+    emit Release();
+
+    // Update the last release time
+    _lastReleaseTime = block.timestamp;
+}
+
+  function resume() external onlyOwner whenNotPaused whenStopped whenReleaseStopped {
+    require(!_emergencyStop, "Contract is in an emergency stop"); // additional check
+    _emergencyStop = false;
+    _releaseStopped = false;
+    emit Release();
+}
+
+    function balanceOf(address account) external view returns (uint256) {
+        return _balances[account];
     }
 
-    // Start the Pre-IEO Round
-function startPreIEO(uint256 _totalTokens, uint256 _destroyTime) external onlyOwner {
-    require(!preIEOActive, "Pre-IEO already active");
-    require(_totalTokens > 0, "Invalid total tokens");
-    require(_destroyTime > block.timestamp, "Invalid destroy time");
+    // function to allow users to deposit tokens into the contract
+function deposit(uint256 amount) external nonReentrant returns (bool) {
+    require(amount > 0, "Deposit amount must be greater than zero"); 
 
-    // Convert _totalTokens to a BigNumber object
-    uint256 totalTokensBN = _totalTokens;
+    // Transfer tokens from the sender to the contract
+    _transfer(msg.sender, address(this), amount);
 
-    totalTokens = totalTokensBN;
-    tokensSold = 0;
-    preIEOActive = true;
-    destroyTime = _destroyTime;
+    // Update last deposit timestamp for the user
+    _lastDepositTime[msg.sender] = block.timestamp;
+
+    // Add to audit trail
+    bytes32 auditHash = keccak256(abi.encodePacked("deposit", msg.sender, amount, block.timestamp));
+    _auditTrail[auditHash] = true;
+    emit AuditTrail(auditHash);
+
+    return true;
 }
 
-    // Stop the Pre-IEO Round
-    uint256 private constant COOLDOWN_PERIOD = 24 hours;
-    uint256 private cooldownEndTime;
+// allow user to withdraw tokens 
+function withdraw(uint256 amount) external nonReentrant whenNotStopped returns (bool) {
+    require(amount > 0, "Withdrawal amount must be greater than zero");
+    require(!_emergencyStop && !_releaseStopped, "Contract is stopped");
+    require(_balances[msg.sender] >= amount, "Insufficient balance");
 
-    function stopPreIEO() external onlyOwner {
-    require(preIEOActive, "Pre-IEO not active");
-    require(block.timestamp < cooldownEndTime, "Cooldown period has not ended");
+    // Check if the user's tokens are still locked up
+    require(block.timestamp >= _lastDepositTime[msg.sender] + LOCKUP_PERIOD, "Tokens are still locked up");
 
-    preIEOActive = false;
-    cooldownEndTime = block.timestamp + COOLDOWN_PERIOD;
+    // Transfer tokens from the contract to the sender
+    _transfer(address(this), msg.sender, amount);
+
+    // Update last deposit time
+    _lastDepositTime[msg.sender] = block.timestamp;
+
+    // Emit audit trail event
+    bytes32 auditHash = keccak256(abi.encodePacked("withdraw", msg.sender, amount, block.timestamp));
+    _auditTrail[auditHash] = true;
+    emit AuditTrail(auditHash);
+
+    return true;
 }
 
-    // Purchase Tokens in Pre-IEO Round with USDT
-function purchaseTokens() external isPreIEOActive {
-    require(whitelist[msg.sender], "Investor not whitelisted");
+    // function to allow the owner to withdraw tokens from the contract after a lockup period.
+function withdrawByOwner(uint256 amount) external nonReentrant onlyOwner whenNotPausedAndNotOwner returns (bool) {
+    require(amount > 0, "Withdraw amount must be greater than zero");
 
-    uint256 amount = IUSDT(USDTContract).balanceOf(msg.sender);
-    require(amount >= minInvestment, "Amount is less than the minimum investment amount");
-    require(amount <= maxInvestment, "Amount is more than the maximum investment amount");
+    // Check if tokens are still locked up
+    require(block.timestamp >= _lastDepositTime[msg.sender] + LOCKUP_PERIOD, "Tokens are still locked up");
 
-    // Adjust the precision to match the number of decimal places in tokenPrice
-    uint256 precision = 10**18;
-    uint256 tokensToBuy = amount.mul(precision).div(tokenPrice);
+     // Check if user has enough tokens to withdraw
+    require(amount <= _balances[msg.sender], "Insufficient balance");
 
-    // Ensure that the number of tokens to buy is within the available limit
-    require(tokensSold.add(tokensToBuy) <= totalTokens, "Not enough tokens left for sale");
+    // Transfer tokens from the contract to the owner
+    _transfer(address(this), msg.sender, amount);
 
-    // Update the number of tokens sold and the investor's vested amount
-    tokensSold = tokensSold.add(tokensToBuy);
-    if (vestedAmount[msg.sender] == 0) {
-        investorCount = investorCount.add(1);
+    // Add to audit trail
+    bytes32 auditHash = keccak256(abi.encodePacked("withdraw", msg.sender, amount, block.timestamp));
+    _auditTrail[auditHash] = true;
+    emit AuditTrail(auditHash);
+
+    return true;
+}
+
+function isContract(address account) internal view returns (bool) {
+    uint256 codeSize;
+    assembly {
+        codeSize := extcodesize(account)
     }
-    vestedAmount[msg.sender] = vestedAmount[msg.sender].add(tokensToBuy.div(2));
-    vestingStart[msg.sender] = block.timestamp.add(vestingCliff);
-
-    // Track the owner of the vested tokens
-    uint256 tokenId = investorCount.mul(2).sub(1);
-    vestedTokenOwners[msg.sender][tokenId] = msg.sender;
-    vestedTokenOwners[msg.sender][tokenId.add(1)] = owner();
-
-    // Transfer USDT from the investor to the contract
-    require(IUSDT(USDTContract).transferFrom(msg.sender, address(this), amount), "Failed to transfer USDT");
-
-    // Transfer tokens to the investor
-    require(IERC20(LOIContract).transfer(msg.sender, tokensToBuy), "Failed to transfer tokens");
-
-    // Emit event
-    emit TokensPurchased(msg.sender, tokensToBuy);
-    emit VestingStarted(msg.sender, vestedAmount[msg.sender], vestingStart[msg.sender]);
+    return codeSize > 0;
 }
 
-// Withdraw USDT from Contract
-    function withdraUSDT() external onlyOwner isPreIEOActive isWhitelisted {
-    address payable ownerAddress = payable(owner());
-ownerAddress.transfer(address(this).balance);
+    // function to allow users to transfer tokens to other users.
+    function transfer(address recipient, uint256 amount) external nonReentrant whenNotPaused returns (bool) {
+    require(recipient != address(0), "Transfer to zero address");
+    require(amount > 0, "Transfer amount must be greater than zero");
+    require(amount <= _balances[msg.sender], "Insufficient balance");
+    require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
 
+
+    // Check if tokens are still locked up
+    require(block.timestamp >= _lastDepositTime[msg.sender] + LOCKUP_PERIOD, "Tokens are still locked up");
+
+    // Check if recipient is not a contract
+    require(!isContract(recipient), "Recipient cannot be a contract");
+
+    if (msg.sender != _owner && recipient != _owner) {
+        require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
+
+        // Check if the user has exceeded the maxTransferPeriod
+        require(block.timestamp - _lastDepositTime[msg.sender] <= maxTransferPeriod, "Transfer period has exceeded the maximum allowed time.");
+    }
+
+    // Calculate tax
+    uint256 taxAmount = amount.mul(2).div(100);
+
+    // Transfer tokens from the sender to the contract, minus tax
+    _transfer(msg.sender, address(this), amount.sub(taxAmount));
+    
+    // Update last deposit timestamp for the user
+    _lastDepositTime[msg.sender] = block.timestamp;
+
+    // Transfer tax to the owner
+    _transfer(msg.sender, _owner, taxAmount);
+
+    // Transfer remaining tokens from the contract to the recipient
+    _transfer(address(this), recipient, amount.sub(taxAmount));
+
+    // Add to audit trail
+    bytes32 auditHash = keccak256(abi.encodePacked("transfer", msg.sender, recipient, amount, block.timestamp));
+    _auditTrail[auditHash] = true;
+    emit AuditTrail(auditHash);
+
+    return true;
 }
 
-// Withdraw Tokens from Contract
-    function withdrawTokens(uint256 _amount) external onlyOwner isPreIEOActive {
-    require(block.timestamp >= destroyTime, "Tokens are still locked");
-    uint256 LOIBalance = IERC20(LOIContract).balanceOf(address(this));
-    require(_amount <= LOIBalance, "Insufficient LOI tokens in contract");
-    require(IERC20(LOIContract).transfer(owner(), _amount), "Token transfer failed");
+function _transfer(address sender, address recipient, uint256 amount) internal whenNotPausedAndNotOwner whenNotStopped nonReentrant {
+    require(sender != address(0), "Transfer from the zero address");
+    require(recipient != address(0), "Transfer to the zero address");
+    require(amount > 0, "Transfer amount must be greater than zero");
+
+    // Check if total supply will exceed maximum supply
+    require(totalSupply.add(amount) <= maxSupply, "Maximum supply exceeded");
+
+    // Subtract the transferred amount from the sender's balance
+    _balances[sender] = _balances[sender].sub(amount);
+
+    // Add the transferred amount to the recipient's balance
+    _balances[recipient] = _balances[recipient].add(amount);
+
+    // Update total supply
+    totalSupply = totalSupply.sub(amount);
+
+    emit Transfer(sender, recipient, amount);
 }
 
-// Get the Balance of LOI Tokens in Contract
-    function getLOIBalance() external view returns (uint256) {
-    return IERC20(LOIContract).balanceOf(address(this));
+function _approve(address owner, address spender, uint256 amount) internal {
+require(owner != address(0), "approve from the zero address");
+require(spender != address(0), "approve to the zero address");
+require(amount <= _balances[owner], "Insufficient balance to approve allowance");
+
+uint256 currentAllowance = _allowances[owner][spender];
+require(amount > currentAllowance, "Allowance is already greater than or equal to requested amount");
+
+_allowances[owner][spender] = amount;
+emit Approval(owner, spender, amount);
 }
 
-// Get the USDT Balance of Contract
-    function getUSDTBalance() external view returns (uint256) {
-    return address(this).balance;
+    function transferFrom(address sender, address recipient, uint256 amount) external nonReentrant whenNotPaused returns (bool) {
+    require(sender != address(0), "Transfer from zero address");
+    require(recipient != address(0), "Transfer to zero address");
+    require(amount > 0, "Transfer amount must be greater than zero");
+    require(amount <= _balances[sender], "Insufficient balance");
+    require(amount <= _allowances[sender][msg.sender], "Insufficient allowance");
+
+    // Check if sender and recipient are not contracts
+    require(!isContract(sender), "Sender cannot be a contract");
+    require(!isContract(recipient), "Recipient cannot be a contract");
+
+    if (sender != _owner && recipient != _owner) {
+        require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
+    }
+
+    // Calculate tax
+    uint256 taxAmount = amount.mul(2).div(100);
+
+    // Transfer tokens from the sender to the contract, minus tax
+    _transfer(sender, address(this), amount.sub(taxAmount));
+
+    // Update last deposit timestamp for the user
+    _lastDepositTime[sender] = block.timestamp;
+
+    // Transfer tax to the owner
+    _transfer(sender, _owner, taxAmount);
+
+    // Transfer remaining tokens from the contract to the recipient
+    _transfer(address(this), recipient, amount.sub(taxAmount));
+
+    // Decrease allowance
+    _approve(msg.sender, sender, _allowances[sender][msg.sender].sub(amount));
+
+    return true;
 }
 
-function startVesting() external {
-    require(preIEOActive == false, "Pre-IEO still active");
-
-    // set vesting start time for the calling investor
-    vestingStart[msg.sender] = block.timestamp;
-    // initialize vestedAmount for the investor to maximum tokens purchased in Pre-IEO round
-    vestedAmount[msg.sender] = maxInvestment.div(tokenPrice);
-
-    emit VestingStarted(msg.sender, vestedAmount[msg.sender], vestingStart[msg.sender]);
+function getLastDepositTimestamp(address account) external view returns (uint256) {
+    return _lastDepositTime[account];
 }
 
-function calculateVestedTokens(address investor) public view returns (uint256) {
-    require(vestingStart[investor] > 0, "Vesting not started for investor");
-
-    uint256 elapsedTime = block.timestamp.sub(vestingStart[investor]);
-    if (elapsedTime < vestingCliff) {
+function getRemainingTimeToWithdraw() external view returns (uint256) {
+    uint256 lastDepositTime = _lastDepositTime[msg.sender];
+    if (lastDepositTime == 0) {
         return 0;
     }
-    uint256 vestingDuration = vestingPeriod.sub(vestingCliff);
-    uint256 vestedTokens = vestedAmount[investor].mul(elapsedTime.sub(vestingCliff)).div(vestingDuration);
-
-    return vestedTokens;
-}
-
-    function getVestedAmount() external view isVestingActive(msg.sender) returns (uint256) {
-    return vestedAmount[msg.sender];
-}
-
-// Unlock Vested Tokens for a Specific Investor
-    function unlockTokens() external {
-    require(block.timestamp >= destroyTime, "Vesting period not over yet");
-    uint256 tokensToUnlock = vestedAmount[msg.sender];
-    require(tokensToUnlock > 0, "No vested tokens to unlock");
-
-    vestedAmount[msg.sender] = 0;
-
-    // Transfer Tokens to Investor
-    uint256 LOIBalance = IERC20(LOIContract).balanceOf(address(this));
-    require(LOIBalance >= tokensToUnlock, "Insufficient LOI tokens in contract");
-    require(IERC20(LOIContract).transfer(msg.sender, tokensToUnlock), "Token transfer failed");
-}
-
-    function withdrawVestedTokens() external isVestingActive(msg.sender) {
-    uint256 tokensToWithdraw = vestedAmount[msg.sender];
-    vestedAmount[msg.sender] = 0;
-
-    // Transfer Tokens to Investor
-    uint256 LOIBalance = IERC20(LOIContract).balanceOf(address(this));
-    require(LOIBalance >= tokensToWithdraw, "Insufficient LOI tokens in contract");
-    require(IERC20(LOIContract).transfer(msg.sender, tokensToWithdraw), "Token transfer failed");
-}
-
-// Get the number of tokens that have vested for an investor
-    function getVestedTokens(address _investor) external view returns (uint256) {
-    return vestedAmount[_investor];
-}
-
-// Refund USDT or Tokens to Investor
-    function refundInvestor(address payable _investor, uint256 _USDTAmount, uint256 _tokenAmount) external onlyOwner isWhitelisted {
-    require(_investor != address(0), "Invalid investor address");
-
-   // Refund Ether to Investor
-if (_USDTAmount > 0) {
-    require(address(this).balance >= _USDTAmount, "Insufficient ether balance in contract");
-    _investor.transfer(_USDTAmount);
-}
-
-// Refund Tokens to Investor
-if (_tokenAmount > 0) {
-    require(IERC20(LOIContract).balanceOf(address(this)) >= _tokenAmount, "Insufficient LOI token balance in contract");
-    require(IERC20(LOIContract).transfer(_investor, _tokenAmount), "Token transfer failed");
-}
-
-}
-    function destroyContract() external onlyOwner {
-    uint256 LOIBalance = IERC20(LOIContract).balanceOf(address(this));
-    require(LOIBalance > 0, "No LOI tokens in contract");
-
-    // Check if the destroy time has passed
-    require(block.timestamp >= destroyTime, "Contract cannot be destroyed yet");
-
-    // Transfer remaining LOI tokens to owner
-    require(IERC20(LOIContract).transfer(owner(), LOIBalance), "Token transfer failed");
-
-    // Transfer any remaining USDT to owner
-    uint256 USDTBalance = address(this).balance;
-    require(USDTBalance > 0, "No ether in contract");
-    payable(owner()).transfer(USDTBalance);
+    uint256 remainingTime = lastDepositTime + LOCKUP_PERIOD - block.timestamp;
+    if (remainingTime < 0) {
+        return 0;
+    }
+    return remainingTime;
 }
 
 
-// Set the destroy time (in seconds since Unix epoch)
-    function setDestroyTime(uint256 _destroyTime) external onlyOwner {
-    destroyTime = _destroyTime;
+function increaseAllowance(address spender, uint256 addedValue) external nonReentrant returns (bool) {
+    require(spender != address(0), "Increase allowance to zero address");
+    _allowances[msg.sender][spender] = _allowances[msg.sender][spender].add(addedValue);
+    emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
+    return true;
 }
 
+function decreaseAllowance(address spender, uint256 subtractedValue) external nonReentrant returns (bool) {
+    require(spender != address(0), "Decrease allowance to zero address");
+    uint256 oldAllowance = _allowances[msg.sender][spender];
+    if (subtractedValue >= oldAllowance) {
+        _allowances[msg.sender][spender] = 0;
+    } else {
+        _allowances[msg.sender][spender] = oldAllowance.sub(subtractedValue);
+    }
+    emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
+    return true;
+}
 
-// Fallback Function
-fallback() external payable {}
+function setMaxTxAmount(uint256 amount) external onlyOwner {
+    require(amount > 0, "Amount must be greater than zero");
+    require(amount <= totalSupply, "MaxTxAmount exceeds total supply");
+    maxTxAmount = amount;
+}
 
-// Receive Function
-receive() external payable {}
+function renounceOwnership() external onlyOwner {
+    emit OwnershipTransferred(_owner, address(0));
+    _owner = address(0);
+}
+
+function transferOwnership(address newOwner) external onlyOwner {
+    require(newOwner != address(0), "Transfer to zero address");
+    emit OwnershipTransferred(_owner, newOwner);
+    _owner = newOwner;
+}
+
+function emergencyWithdraw() external onlyOwner {
+    // Transfer all tokens from the contract to the owner
+    _transfer(address(this), msg.sender, _balances[address(this)]);
+
+    // Add to audit trail
+    bytes32 auditHash = keccak256(abi.encodePacked("emergencyWithdraw", msg.sender, _balances[address(this)], block.timestamp));
+    _auditTrail[auditHash] = true;
+    emit AuditTrail(auditHash);
+}
+
+function isExcludedFromReward(address account) external pure returns (bool) {
+    return account == address(0);
+}
+
+function isExcludedFromFee(address account) external pure returns (bool) {
+    return account == address(0);
+}
+
+event Transfer(address indexed from, address indexed to, uint256 amount);
+event Approval(address indexed owner, address indexed spender, uint256 amount);
 }
