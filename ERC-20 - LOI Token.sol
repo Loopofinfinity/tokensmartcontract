@@ -11,12 +11,11 @@ contract LoopOfInfinity is ReentrancyGuard {
 string public name = "Loop Of Infinity";
 string public symbol = "LOI";
 uint8 public decimals = 18;
-uint256 public totalSupply = 45e9 * 1e18; // initial supply of 45 billion
+uint256 public totalSupply = 50e9 * 1e18; // initial supply of 50 billion
 uint256 public maxSupply = 50e9 * 1e18; // maximum supply of 50 billion
 uint256 private constant LOCKUP_PERIOD = 86400; // 1 day in seconds
 uint256 private _lastEmergencyStopTime;
 uint256 private _lastReleaseTime;
-
 
 mapping(address => uint256) private _balances; // mapping is used to store the balance of each user's tokens.
 mapping(address => mapping(address => uint256)) private _allowances; // the allowances mapping is used to store the approved amount of tokens that another address is allowed to transfer on behalf of the owner. The 
@@ -78,7 +77,7 @@ modifier whenNotPausedAndNotOwner() {
 
  constructor() {
         _owner = msg.sender;
-        _balances[msg.sender] = totalSupply;
+        _balances[msg.sender] = totalSupply; // Allocate all initial supply to the contract owner
         emit Transfer(address(0), msg.sender, totalSupply);
     }
 
@@ -161,14 +160,16 @@ function withdraw(uint256 amount) external nonReentrant whenNotStopped returns (
     require(!_emergencyStop && !_releaseStopped, "Contract is stopped");
     require(_balances[msg.sender] >= amount, "Insufficient balance");
 
-    // Check if the user's tokens are still locked up
-    require(block.timestamp >= _lastDepositTime[msg.sender] + LOCKUP_PERIOD, "Tokens are still locked up");
+    // Check if tokens are still locked up
+    require(_lastDepositTime[msg.sender] == 0 || _lastDepositTime[msg.sender].add(LOCKUP_PERIOD) <= block.timestamp, "Tokens are still locked up");
 
     // Transfer tokens from the contract to the sender
     _transfer(address(this), msg.sender, amount);
 
-    // Update last deposit time
-    _lastDepositTime[msg.sender] = block.timestamp;
+    // Update last deposit time if the user has not made any deposits before
+    if (_lastDepositTime[msg.sender] == 0) {
+        _lastDepositTime[msg.sender] = block.timestamp;
+    }
 
     // Emit audit trail event
     bytes32 auditHash = keccak256(abi.encodePacked("withdraw", msg.sender, amount, block.timestamp));
@@ -181,9 +182,6 @@ function withdraw(uint256 amount) external nonReentrant whenNotStopped returns (
     // function to allow the owner to withdraw tokens from the contract after a lockup period.
 function withdrawByOwner(uint256 amount) external nonReentrant onlyOwner whenNotPausedAndNotOwner returns (bool) {
     require(amount > 0, "Withdraw amount must be greater than zero");
-
-    // Check if tokens are still locked up
-    require(block.timestamp >= _lastDepositTime[msg.sender] + LOCKUP_PERIOD, "Tokens are still locked up");
 
      // Check if user has enough tokens to withdraw
     require(amount <= _balances[msg.sender], "Insufficient balance");
@@ -207,16 +205,15 @@ function isContract(address account) internal view returns (bool) {
     return codeSize > 0;
 }
 
-    // function to allow users to transfer tokens to other users.
-    function transfer(address recipient, uint256 amount) external nonReentrant whenNotPaused returns (bool) {
+   // function to allow users to transfer tokens to other users.
+function transfer(address recipient, uint256 amount) external nonReentrant whenNotPaused returns (bool) {
     require(recipient != address(0), "Transfer to zero address");
     require(amount > 0, "Transfer amount must be greater than zero");
     require(amount <= _balances[msg.sender], "Insufficient balance");
     require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
 
-
     // Check if tokens are still locked up
-    require(block.timestamp >= _lastDepositTime[msg.sender] + LOCKUP_PERIOD, "Tokens are still locked up");
+    require(_lastDepositTime[msg.sender] == 0 || _lastDepositTime[msg.sender].add(LOCKUP_PERIOD) <= block.timestamp, "Tokens are still locked up");
 
     // Check if recipient is not a contract
     require(!isContract(recipient), "Recipient cannot be a contract");
@@ -233,9 +230,11 @@ function isContract(address account) internal view returns (bool) {
 
     // Transfer tokens from the sender to the contract, minus tax
     _transfer(msg.sender, address(this), amount.sub(taxAmount));
-    
-    // Update last deposit timestamp for the user
-    _lastDepositTime[msg.sender] = block.timestamp;
+
+    // Update last deposit timestamp for the user if it's their first transfer
+    if (_lastDepositTime[msg.sender] == 0) {
+        _lastDepositTime[msg.sender] = block.timestamp;
+    }
 
     // Transfer tax to the owner
     _transfer(msg.sender, _owner, taxAmount);
@@ -298,13 +297,16 @@ emit Approval(owner, spender, amount);
         require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
     }
 
+    // Check if tokens are still locked up
+    require(_lastDepositTime[sender] == 0 || block.timestamp >= _lastDepositTime[sender] + LOCKUP_PERIOD, "Tokens are still locked up");
+
     // Calculate tax
     uint256 taxAmount = amount.mul(2).div(100);
 
     // Transfer tokens from the sender to the contract, minus tax
     _transfer(sender, address(this), amount.sub(taxAmount));
 
-    // Update last deposit timestamp for the user
+    // Update last deposit timestamp for the sender
     _lastDepositTime[sender] = block.timestamp;
 
     // Transfer tax to the owner
@@ -334,7 +336,6 @@ function getRemainingTimeToWithdraw() external view returns (uint256) {
     }
     return remainingTime;
 }
-
 
 function increaseAllowance(address spender, uint256 addedValue) external nonReentrant returns (bool) {
     require(spender != address(0), "Increase allowance to zero address");
