@@ -1,71 +1,63 @@
 // SPDX-License-Identifier: MIT
-
 pragma solidity 0.8.19;
 
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/Context.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract LoopOfInfinity is ReentrancyGuard {
+contract GATE is ReentrancyGuard {
     using SafeMath for uint256;
 
-string public name = "Loop Of Infinity";
-string public symbol = "LOI";
-uint8 public decimals = 18;
-uint256 public totalSupply = 50e9 * 1e18; // initial supply of 50 billion
-uint256 public maxSupply = 50e9 * 1e18; // maximum supply of 50 billion
-uint256 private constant LOCKUP_PERIOD = 86400; // 1 day in seconds
-uint256 private _lastEmergencyStopTime;
-uint256 private _lastReleaseTime;
+    string public name = "GATE";
+    string public symbol = "GATE";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 50e9 * 1e18; // Total supply of 50 billion
+    uint256 private constant maxSupply = 100e9 * 1e18; // Maximum supply of 100 billion
 
-mapping(address => uint256) private _balances; // mapping is used to store the balance of each user's tokens.
-mapping(address => mapping(address => uint256)) private _allowances; // the allowances mapping is used to store the approved amount of tokens that another address is allowed to transfer on behalf of the owner. The 
-mapping(address => uint256) private _lastDepositTime; // is used to store the timestamp of the last deposit made by a user, which is used to determine if tokens are still locked up during a withdrawal.
-mapping(bytes32 => bool) public _auditTrail; /**
- * @dev The `AuditTrail` event is emitted every time a deposit or a withdrawal is made.
- * The `auditTrail` mapping can be used to keep track of all the audit trails.
- * Each audit trail contains a hash of the transaction data, including the type of transaction (deposit or withdrawal),
- * the user's address, the amount of tokens, and the timestamp.
- * This provides an immutable record of all the deposits and withdrawals made in the contract, which can be useful for
- * auditing purposes.
- */
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(bytes32 => bool) public _auditTrail;
+    mapping(address => uint256) private _lastDepositTime;
 
-// Anti-whale system: maximum transfer amount of 250 million tokens per transaction
-uint256 private maxTxAmount = 250e6 * 1e18;
-uint256 private maxTransferPeriod = 1 days; // the maximum time period for a user to transfer tokens
 
-address private _owner;
-bool private _paused;
-bool private _emergencyStop;
-bool private _releaseStopped;
+    uint256 private maxTxAmount = 250e6 * 1e18;
 
-event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
-event Paused(address account);
-event Unpaused(address account);
-event AuditTrail(bytes32 indexed auditHash); 
-event EmergencyStop();
-event Release();
+    address private _owner;
+    bool private _paused;
+    bool private _emergencyStop;
+    bool private _releaseStopped;
 
-modifier onlyOwner() {
-    require(msg.sender == _owner, "Caller is not the owner");
-    _;
-}
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event Paused(address account);
+    event Unpaused(address account);
+    event AuditTrail(bytes32 indexed auditHash);
+    event EmergencyStop();
+    event Release();
 
-modifier whenNotPaused() {
-    require(!_paused || msg.sender == _owner, "Contract is paused");
-    _;
-}
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Caller is not the owner");
+        _;
+    }
 
-modifier whenNotPausedAndNotOwner() {
-    require(!_paused || msg.sender != _owner, "Contract is paused");
-    _;
-}
+    modifier whenNotPaused() {
+        require(!_paused || msg.sender == _owner, "Contract is paused");
+        _;
+    }
 
-  modifier whenNotStopped() {
+    modifier whenNotPausedAndNotOwner() {
+        require(!_paused || msg.sender != _owner, "Contract is paused");
+        _;
+    }
+
+    modifier whenNotStopped() {
         require(!_emergencyStop, "Contract is stopped");
         _;
     }
 
-      modifier whenStopped() {
+    modifier whenStopped() {
         require(_emergencyStop, "Contract is not stopped");
         _;
     }
@@ -75,129 +67,106 @@ modifier whenNotPausedAndNotOwner() {
         _;
     }
 
- constructor() {
-        _owner = msg.sender;
-        _balances[msg.sender] = totalSupply; // Allocate all initial supply to the contract owner
-        emit Transfer(address(0), msg.sender, totalSupply);
+   constructor() {
+    _owner = msg.sender;
+    
+    // Allocate 11.5 billion tokens for the token sale
+    uint256 tokensForSale = 11.5e9 * 1e18;
+    _balances[address(this)] = tokensForSale;
+    emit Transfer(address(0), address(this), tokensForSale);
+
+    // Allocate the remaining tokens to the owner
+    uint256 tokensForOwner = totalSupply.sub(tokensForSale);
+    _balances[msg.sender] = tokensForOwner;
+    emit Transfer(address(0), msg.sender, tokensForOwner);
+}
+
+    function pause() external onlyOwner nonReentrant {
+        require(!_paused, "Contract is already paused");
+        _paused = true;
+        emit Paused(msg.sender);
     }
 
-function _fallback() external payable {
-    if (msg.value > 0) {
-        // send back the ether
-        (bool success,) = msg.sender.call{value: msg.value}("");
-        require(success, "Failed to return ETH");
+    function unpause() external onlyOwner nonReentrant {
+        require(_paused, "Contract is not paused");
+        _paused = false;
+        emit Unpaused(msg.sender);
     }
-    else {
-        revert("Invalid transaction");
+
+    function emergencyStop() external onlyOwner whenNotStopped nonReentrant {
+        require(!_emergencyStop, "Contract is already stopped");
+        _emergencyStop = true;
+        emit EmergencyStop();
     }
-}
 
-function pause() external onlyOwner {
-    require(!_paused, "Contract is already paused");
-    _paused = true;
-    emit Paused(msg.sender);
-}
+    function release() external onlyOwner whenNotPaused whenNotStopped nonReentrant {
+        require(!_emergencyStop, "Contract is stopped");
+        require(!_releaseStopped, "Release is already stopped");
 
-function unpause() external onlyOwner {
-    require(_paused, "Contract is not paused");
-    _paused = false;
-    emit Unpaused(msg.sender);
-}
+        _releaseStopped = true;
+        emit Release();
+    }
 
-  function emergencyStop() external onlyOwner whenNotStopped {
-    require(!_emergencyStop, "Contract is already stopped");
-    require(block.timestamp >= _lastEmergencyStopTime + LOCKUP_PERIOD, "Cannot stop contract again yet");
-
-    _emergencyStop = true;
-    _lastEmergencyStopTime = block.timestamp;
-    emit EmergencyStop();
-}
-
- function release() external onlyOwner whenNotPaused whenNotStopped {
-    require(!_emergencyStop, "Contract is stopped");
-    require(!_releaseStopped, "Release is already stopped");
-    require(block.timestamp >= _lastReleaseTime + LOCKUP_PERIOD, "Cannot release tokens yet");
-
-    _releaseStopped = true;
-    emit Release();
-
-    // Update the last release time
-    _lastReleaseTime = block.timestamp;
-}
-
-  function resume() external onlyOwner whenNotPaused whenStopped whenReleaseStopped {
-    require(!_emergencyStop, "Contract is in an emergency stop"); // additional check
-    _emergencyStop = false;
-    _releaseStopped = false;
-    emit Release();
-}
+    function resume() external onlyOwner whenNotPaused whenStopped whenReleaseStopped nonReentrant {
+        require(!_emergencyStop, "Contract is in an emergency stop"); // additional check
+        _emergencyStop = false;
+        _releaseStopped = false;
+        emit Release();
+    }
 
     function balanceOf(address account) external view returns (uint256) {
         return _balances[account];
     }
 
-    // function to allow users to deposit tokens into the contract
-function deposit(uint256 amount) external nonReentrant returns (bool) {
-    require(amount > 0, "Deposit amount must be greater than zero"); 
+   function deposit(uint256 amount) external returns (bool) {
+        require(amount > 0, "Deposit amount must be greater than zero");
 
-    // Transfer tokens from the sender to the contract
-    _transfer(msg.sender, address(this), amount);
+        _transferInternal(msg.sender, address(this), amount);
 
-    // Update last deposit timestamp for the user
-    _lastDepositTime[msg.sender] = block.timestamp;
+        bytes32 auditHash = keccak256(abi.encodePacked("deposit", msg.sender, amount, block.timestamp));
+        _auditTrail[auditHash] = true;
+        emit AuditTrail(auditHash);
 
-    // Add to audit trail
-    bytes32 auditHash = keccak256(abi.encodePacked("deposit", msg.sender, amount, block.timestamp));
-    _auditTrail[auditHash] = true;
-    emit AuditTrail(auditHash);
-
-    return true;
-}
-
-// allow user to withdraw tokens 
-function withdraw(uint256 amount) external nonReentrant whenNotStopped returns (bool) {
-    require(amount > 0, "Withdrawal amount must be greater than zero");
-    require(!_emergencyStop && !_releaseStopped, "Contract is stopped");
-    require(_balances[msg.sender] >= amount, "Insufficient balance");
-
-    // Check if tokens are still locked up
-    require(_lastDepositTime[msg.sender] == 0 || _lastDepositTime[msg.sender].add(LOCKUP_PERIOD) <= block.timestamp, "Tokens are still locked up");
-
-    // Transfer tokens from the contract to the sender
-    _transfer(address(this), msg.sender, amount);
-
-    // Update last deposit time if the user has not made any deposits before
-    if (_lastDepositTime[msg.sender] == 0) {
+        // Update the last deposit timestamp for the sender (optional if you don't need it)
         _lastDepositTime[msg.sender] = block.timestamp;
+
+        return true;
     }
 
-    // Emit audit trail event
-    bytes32 auditHash = keccak256(abi.encodePacked("withdraw", msg.sender, amount, block.timestamp));
-    _auditTrail[auditHash] = true;
-    emit AuditTrail(auditHash);
+    function withdraw(uint256 amount) external whenNotStopped returns (bool) {
+        require(amount > 0, "Withdrawal amount must be greater than zero");
+        require(!_emergencyStop, "Contract is stopped");
+        require(_balances[msg.sender] >= amount, "Insufficient balance");
 
-    return true;
-}
+        _transferInternal(address(this), msg.sender, amount);
 
-    // function to allow the owner to withdraw tokens from the contract after a lockup period.
-function withdrawByOwner(uint256 amount) external nonReentrant onlyOwner whenNotPausedAndNotOwner returns (bool) {
-    require(amount > 0, "Withdraw amount must be greater than zero");
+        bytes32 auditHash = keccak256(abi.encodePacked("withdraw", msg.sender, amount, block.timestamp));
+        _auditTrail[auditHash] = true;
+        emit AuditTrail(auditHash);
 
-     // Check if user has enough tokens to withdraw
-    require(amount <= _balances[msg.sender], "Insufficient balance");
+        return true;
+    }
 
-    // Transfer tokens from the contract to the owner
-    _transfer(address(this), msg.sender, amount);
+    function withdrawByOwner(uint256 amount) external onlyOwner whenNotPausedAndNotOwner returns (bool) {
+        require(amount > 0, "Withdraw amount must be greater than zero");
 
-    // Add to audit trail
-    bytes32 auditHash = keccak256(abi.encodePacked("withdraw", msg.sender, amount, block.timestamp));
-    _auditTrail[auditHash] = true;
-    emit AuditTrail(auditHash);
+        require(amount <= _balances[msg.sender], "Insufficient balance");
+        require(totalSupply.add(amount) <= maxSupply, "Total supply exceeds maximum supply");
 
-    return true;
-}
+        _transferInternal(address(this), msg.sender, amount);
 
-function isContract(address account) internal view returns (bool) {
+        bytes32 auditHash = keccak256(abi.encodePacked("withdraw", msg.sender, amount, block.timestamp));
+        _auditTrail[auditHash] = true;
+        emit AuditTrail(auditHash);
+
+        return true;
+    }
+
+    function isContract(address account) internal view returns (bool) {
+    if (account == address(this)) {
+        return false; // Exclude the token contract itself from the check
+    }
+
     uint256 codeSize;
     assembly {
         codeSize := extcodesize(account)
@@ -205,44 +174,20 @@ function isContract(address account) internal view returns (bool) {
     return codeSize > 0;
 }
 
-   // function to allow users to transfer tokens to other users.
-function transfer(address recipient, uint256 amount) external nonReentrant whenNotPaused returns (bool) {
+    function transfer(address recipient, uint256 amount) external whenNotPaused returns (bool) {
     require(recipient != address(0), "Transfer to zero address");
     require(amount > 0, "Transfer amount must be greater than zero");
     require(amount <= _balances[msg.sender], "Insufficient balance");
     require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
 
-    // Check if tokens are still locked up
-    require(_lastDepositTime[msg.sender] == 0 || _lastDepositTime[msg.sender].add(LOCKUP_PERIOD) <= block.timestamp, "Tokens are still locked up");
-
-    // Check if recipient is not a contract
-    require(!isContract(recipient), "Recipient cannot be a contract");
-
-    if (msg.sender != _owner && recipient != _owner) {
-        require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
-
-        // Check if the user has exceeded the maxTransferPeriod
-        require(block.timestamp - _lastDepositTime[msg.sender] <= maxTransferPeriod, "Transfer period has exceeded the maximum allowed time.");
-    }
-
-    // Calculate tax
     uint256 taxAmount = amount.mul(2).div(100);
 
-    // Transfer tokens from the sender to the contract, minus tax
-    _transfer(msg.sender, address(this), amount.sub(taxAmount));
+    _transferInternal(msg.sender, address(this), amount.sub(taxAmount));
 
-    // Update last deposit timestamp for the user if it's their first transfer
-    if (_lastDepositTime[msg.sender] == 0) {
-        _lastDepositTime[msg.sender] = block.timestamp;
-    }
+    _transferInternal(msg.sender, _owner, taxAmount);
 
-    // Transfer tax to the owner
-    _transfer(msg.sender, _owner, taxAmount);
+    _transferInternal(address(this), recipient, amount.sub(taxAmount));
 
-    // Transfer remaining tokens from the contract to the recipient
-    _transfer(address(this), recipient, amount.sub(taxAmount));
-
-    // Add to audit trail
     bytes32 auditHash = keccak256(abi.encodePacked("transfer", msg.sender, recipient, amount, block.timestamp));
     _auditTrail[auditHash] = true;
     emit AuditTrail(auditHash);
@@ -250,147 +195,126 @@ function transfer(address recipient, uint256 amount) external nonReentrant whenN
     return true;
 }
 
-function _transfer(address sender, address recipient, uint256 amount) internal whenNotPausedAndNotOwner whenNotStopped nonReentrant {
-    require(sender != address(0), "Transfer from the zero address");
-    require(recipient != address(0), "Transfer to the zero address");
-    require(amount > 0, "Transfer amount must be greater than zero");
+    function _transferInternal(address sender, address recipient, uint256 amount) internal whenNotPausedAndNotOwner whenNotStopped {
+        require(sender != address(0), "Transfer from the zero address");
+        require(recipient != address(0), "Transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
 
-    // Check if total supply will exceed maximum supply
-    require(totalSupply.add(amount) <= maxSupply, "Maximum supply exceeded");
+        if (sender == address(this)) {
+            totalSupply = totalSupply.sub(amount);
+        } else if (recipient == address(this)) {
+            totalSupply = totalSupply.add(amount);
+        }
 
-    // Subtract the transferred amount from the sender's balance
-    _balances[sender] = _balances[sender].sub(amount);
+        require(totalSupply <= maxSupply, "Maximum supply exceeded");
+        require(_balances[sender] >= amount, "Insufficient balance");
 
-    // Add the transferred amount to the recipient's balance
-    _balances[recipient] = _balances[recipient].add(amount);
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
 
-    // Update total supply
-    totalSupply = totalSupply.sub(amount);
+        emit Transfer(sender, recipient, amount);
+    }
 
-    emit Transfer(sender, recipient, amount);
-}
+    function _approve(address owner, address spender, uint256 amount) internal nonReentrant {
+        require(owner != address(0), "approve from the zero address");
+        require(spender != address(0), "approve to the zero address");
+        require(amount <= _balances[owner], "Insufficient balance to approve allowance");
 
-function _approve(address owner, address spender, uint256 amount) internal {
-require(owner != address(0), "approve from the zero address");
-require(spender != address(0), "approve to the zero address");
-require(amount <= _balances[owner], "Insufficient balance to approve allowance");
+        uint256 currentAllowance = _allowances[owner][spender];
+        require(amount > currentAllowance, "Allowance is already greater than or equal to the requested amount");
 
-uint256 currentAllowance = _allowances[owner][spender];
-require(amount > currentAllowance, "Allowance is already greater than or equal to requested amount");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
 
-_allowances[owner][spender] = amount;
-emit Approval(owner, spender, amount);
-}
-
-    function transferFrom(address sender, address recipient, uint256 amount) external nonReentrant whenNotPaused returns (bool) {
-    require(sender != address(0), "Transfer from zero address");
-    require(recipient != address(0), "Transfer to zero address");
-    require(amount > 0, "Transfer amount must be greater than zero");
-    require(amount <= _balances[sender], "Insufficient balance");
-    require(amount <= _allowances[sender][msg.sender], "Insufficient allowance");
-
-    // Check if sender and recipient are not contracts
-    require(!isContract(sender), "Sender cannot be a contract");
-    require(!isContract(recipient), "Recipient cannot be a contract");
-
-    if (sender != _owner && recipient != _owner) {
+    function transferFrom(address sender, address recipient, uint256 amount) external whenNotPaused returns (bool) {
+        require(sender != address(0), "Transfer from zero address");
+        require(recipient != address(0), "Transfer to zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        require(amount <= _balances[sender], "Insufficient balance");
+        require(amount <= _allowances[sender][msg.sender], "Insufficient allowance");
+        require(!isContract(sender), "Sender cannot be a contract");
+        require(!isContract(recipient), "Recipient cannot be a contract");
         require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
+        require(totalSupply.add(amount) <= maxSupply, "Total supply exceeds maximum supply");
+
+        uint256 taxAmount = amount.mul(2).div(100);
+
+        _transferInternal(sender, address(this), amount.sub(taxAmount));
+
+        _transferInternal(sender, _owner, taxAmount);
+
+        _transferInternal(address(this), recipient, amount.sub(taxAmount));
+
+        _approve(sender, msg.sender, _allowances[sender][msg.sender].sub(amount));
+
+        bytes32 auditHash = keccak256(abi.encodePacked("transfer", sender, recipient, amount, block.timestamp));
+        _auditTrail[auditHash] = true;
+        emit AuditTrail(auditHash);
+
+        return true;
     }
 
-    // Check if tokens are still locked up
-    require(_lastDepositTime[sender] == 0 || block.timestamp >= _lastDepositTime[sender] + LOCKUP_PERIOD, "Tokens are still locked up");
-
-    // Calculate tax
-    uint256 taxAmount = amount.mul(2).div(100);
-
-    // Transfer tokens from the sender to the contract, minus tax
-    _transfer(sender, address(this), amount.sub(taxAmount));
-
-    // Update last deposit timestamp for the sender
-    _lastDepositTime[sender] = block.timestamp;
-
-    // Transfer tax to the owner
-    _transfer(sender, _owner, taxAmount);
-
-    // Transfer remaining tokens from the contract to the recipient
-    _transfer(address(this), recipient, amount.sub(taxAmount));
-
-    // Decrease allowance
-    _approve(msg.sender, sender, _allowances[sender][msg.sender].sub(amount));
-
-    return true;
-}
-
-function getLastDepositTimestamp(address account) external view returns (uint256) {
-    return _lastDepositTime[account];
-}
-
-function getRemainingTimeToWithdraw() external view returns (uint256) {
-    uint256 lastDepositTime = _lastDepositTime[msg.sender];
-    if (lastDepositTime == 0) {
-        return 0;
+     function getLastDepositTimestamp(address account) external view returns (uint256) {
+        return _lastDepositTime[account];
     }
-    uint256 remainingTime = lastDepositTime + LOCKUP_PERIOD - block.timestamp;
-    if (remainingTime < 0) {
-        return 0;
+
+    function getRemainingTimeToWithdraw() external pure returns (uint256) {
+        return 0; // There's no lockup period, so always return 0 for remaining time
     }
-    return remainingTime;
-}
 
-function increaseAllowance(address spender, uint256 addedValue) external nonReentrant returns (bool) {
-    require(spender != address(0), "Increase allowance to zero address");
-    _allowances[msg.sender][spender] = _allowances[msg.sender][spender].add(addedValue);
-    emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
-    return true;
-}
-
-function decreaseAllowance(address spender, uint256 subtractedValue) external nonReentrant returns (bool) {
-    require(spender != address(0), "Decrease allowance to zero address");
-    uint256 oldAllowance = _allowances[msg.sender][spender];
-    if (subtractedValue >= oldAllowance) {
-        _allowances[msg.sender][spender] = 0;
-    } else {
-        _allowances[msg.sender][spender] = oldAllowance.sub(subtractedValue);
+    function increaseAllowance(address spender, uint256 addedValue) external nonReentrant returns (bool) {
+        require(spender != address(0), "Increase allowance to zero address");
+        _allowances[msg.sender][spender] = _allowances[msg.sender][spender].add(addedValue);
+        emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
+        return true;
     }
-    emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
-    return true;
-}
 
-function setMaxTxAmount(uint256 amount) external onlyOwner {
-    require(amount > 0, "Amount must be greater than zero");
-    require(amount <= totalSupply, "MaxTxAmount exceeds total supply");
-    maxTxAmount = amount;
-}
+    function decreaseAllowance(address spender, uint256 subtractedValue) external nonReentrant returns (bool) {
+        require(spender != address(0), "Decrease allowance to zero address");
+        uint256 oldAllowance = _allowances[msg.sender][spender];
+        if (subtractedValue >= oldAllowance) {
+            _allowances[msg.sender][spender] = 0;
+        } else {
+            _allowances[msg.sender][spender] = oldAllowance.sub(subtractedValue);
+        }
+        emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
+        return true;
+    }
 
-function renounceOwnership() external onlyOwner {
-    emit OwnershipTransferred(_owner, address(0));
-    _owner = address(0);
-}
+    function setMaxTxAmount(uint256 amount) external onlyOwner {
+        require(amount > 0, "Amount must be greater than zero");
+        require(amount <= maxSupply, "MaxTxAmount exceeds max supply");
+        maxTxAmount = amount;
+    }
 
-function transferOwnership(address newOwner) external onlyOwner {
-    require(newOwner != address(0), "Transfer to zero address");
-    emit OwnershipTransferred(_owner, newOwner);
-    _owner = newOwner;
-}
+    function renounceOwnership() external onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
 
-function emergencyWithdraw() external onlyOwner {
-    // Transfer all tokens from the contract to the owner
-    _transfer(address(this), msg.sender, _balances[address(this)]);
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Transfer to zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
 
-    // Add to audit trail
-    bytes32 auditHash = keccak256(abi.encodePacked("emergencyWithdraw", msg.sender, _balances[address(this)], block.timestamp));
-    _auditTrail[auditHash] = true;
-    emit AuditTrail(auditHash);
-}
+    function emergencyWithdraw() external onlyOwner {
+        _transferInternal(address(this), msg.sender, _balances[address(this)]);
 
-function isExcludedFromReward(address account) external pure returns (bool) {
-    return account == address(0);
-}
+        bytes32 auditHash = keccak256(abi.encodePacked("emergencyWithdraw", msg.sender, _balances[address(this)], block.timestamp));
+        _auditTrail[auditHash] = true;
+        emit AuditTrail(auditHash);
+    }
 
-function isExcludedFromFee(address account) external pure returns (bool) {
-    return account == address(0);
-}
+    function isExcludedFromReward(address account) external pure returns (bool) {
+        return account == address(0);
+    }
 
-event Transfer(address indexed from, address indexed to, uint256 amount);
-event Approval(address indexed owner, address indexed spender, uint256 amount);
+    function isExcludedFromFee(address account) external pure returns (bool) {
+        return account == address(0);
+    }
+
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+    event Approval(address indexed owner, address indexed spender, uint256 amount);
 }
