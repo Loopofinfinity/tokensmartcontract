@@ -8,22 +8,20 @@ import "@openzeppelin/contracts/utils/Context.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract GATE is ReentrancyGuard {
+contract LOI is ReentrancyGuard {
     using SafeMath for uint256;
 
-    string public name = "GATE";
-    string public symbol = "GATE";
+    string public name = "LOI";
+    string public symbol = "LOI";
     uint8 public decimals = 18;
-    uint256 public totalSupply = 50e9 * 1e18; // Total supply of 50 billion
-    uint256 private constant maxSupply = 100e9 * 1e18; // Maximum supply of 100 billion
+    uint256 public totalSupply = 150e9 * 1e18; // Updated total supply of 150 billion
+    uint256 private constant maxSupply = 200e9 * 1e18; // Updated maximum supply of 200 billion
 
     mapping(address => uint256) private _balances;
     mapping(address => mapping(address => uint256)) private _allowances;
     mapping(bytes32 => bool) public _auditTrail;
     mapping(address => uint256) private _lastDepositTime;
-
-
-    uint256 private maxTxAmount = 250e6 * 1e18;
+    mapping(address => mapping(address => uint256)) private _allowed;
 
     address private _owner;
     bool private _paused;
@@ -68,18 +66,12 @@ contract GATE is ReentrancyGuard {
     }
 
    constructor() {
-    _owner = msg.sender;
-    
-    // Allocate 11.5 billion tokens for the token sale
-    uint256 tokensForSale = 11.5e9 * 1e18;
-    _balances[address(this)] = tokensForSale;
-    emit Transfer(address(0), address(this), tokensForSale);
+        _owner = msg.sender;
 
-    // Allocate the remaining tokens to the owner
-    uint256 tokensForOwner = totalSupply.sub(tokensForSale);
-    _balances[msg.sender] = tokensForOwner;
-    emit Transfer(address(0), msg.sender, tokensForOwner);
-}
+        // Allocate the total supply to the owner
+        _balances[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
 
     function pause() external onlyOwner nonReentrant {
         require(!_paused, "Contract is already paused");
@@ -162,23 +154,10 @@ contract GATE is ReentrancyGuard {
         return true;
     }
 
-    function isContract(address account) internal view returns (bool) {
-    if (account == address(this)) {
-        return false; // Exclude the token contract itself from the check
-    }
-
-    uint256 codeSize;
-    assembly {
-        codeSize := extcodesize(account)
-    }
-    return codeSize > 0;
-}
-
     function transfer(address recipient, uint256 amount) external whenNotPaused returns (bool) {
     require(recipient != address(0), "Transfer to zero address");
     require(amount > 0, "Transfer amount must be greater than zero");
     require(amount <= _balances[msg.sender], "Insufficient balance");
-    require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
 
     uint256 taxAmount = amount.mul(2).div(100);
 
@@ -215,7 +194,7 @@ contract GATE is ReentrancyGuard {
         emit Transfer(sender, recipient, amount);
     }
 
-    function _approve(address owner, address spender, uint256 amount) internal nonReentrant {
+    function _approve(address owner, address spender, uint256 amount) public  nonReentrant {
         require(owner != address(0), "approve from the zero address");
         require(spender != address(0), "approve to the zero address");
         require(amount <= _balances[owner], "Insufficient balance to approve allowance");
@@ -228,32 +207,29 @@ contract GATE is ReentrancyGuard {
     }
 
     function transferFrom(address sender, address recipient, uint256 amount) external whenNotPaused returns (bool) {
-        require(sender != address(0), "Transfer from zero address");
-        require(recipient != address(0), "Transfer to zero address");
-        require(amount > 0, "Transfer amount must be greater than zero");
-        require(amount <= _balances[sender], "Insufficient balance");
-        require(amount <= _allowances[sender][msg.sender], "Insufficient allowance");
-        require(!isContract(sender), "Sender cannot be a contract");
-        require(!isContract(recipient), "Recipient cannot be a contract");
-        require(amount <= maxTxAmount, "Transfer amount exceeds the maxTxAmount");
-        require(totalSupply.add(amount) <= maxSupply, "Total supply exceeds maximum supply");
+    require(sender != address(0), "Transfer from zero address");
+    require(recipient != address(0), "Transfer to zero address");
+    require(amount > 0, "Transfer amount must be greater than zero");
+    require(amount <= _balances[sender], "Insufficient balance");
+    require(amount <= _allowed[sender][msg.sender], "Insufficient allowance");
+    require(totalSupply.add(amount) <= maxSupply, "Total supply exceeds maximum supply");
 
-        uint256 taxAmount = amount.mul(2).div(100);
+    uint256 taxAmount = amount.mul(2).div(100);
 
-        _transferInternal(sender, address(this), amount.sub(taxAmount));
+    _transferInternal(sender, address(this), amount.sub(taxAmount));
 
-        _transferInternal(sender, _owner, taxAmount);
+    _transferInternal(sender, _owner, taxAmount);
 
-        _transferInternal(address(this), recipient, amount.sub(taxAmount));
+    _transferInternal(address(this), recipient, amount.sub(taxAmount));
 
-        _approve(sender, msg.sender, _allowances[sender][msg.sender].sub(amount));
+    _allowed[sender][msg.sender] = _allowed[sender][msg.sender].sub(amount);
 
-        bytes32 auditHash = keccak256(abi.encodePacked("transfer", sender, recipient, amount, block.timestamp));
-        _auditTrail[auditHash] = true;
-        emit AuditTrail(auditHash);
+    bytes32 auditHash = keccak256(abi.encodePacked("transfer", sender, recipient, amount, block.timestamp));
+    _auditTrail[auditHash] = true;
+    emit AuditTrail(auditHash);
 
-        return true;
-    }
+    return true;
+}
 
      function getLastDepositTimestamp(address account) external view returns (uint256) {
         return _lastDepositTime[account];
@@ -264,29 +240,23 @@ contract GATE is ReentrancyGuard {
     }
 
     function increaseAllowance(address spender, uint256 addedValue) external nonReentrant returns (bool) {
-        require(spender != address(0), "Increase allowance to zero address");
-        _allowances[msg.sender][spender] = _allowances[msg.sender][spender].add(addedValue);
-        emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
-        return true;
-    }
+    require(spender != address(0), "Increase allowance to zero address");
+    _allowed[msg.sender][spender] = _allowed[msg.sender][spender].add(addedValue);
+    emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+    return true;
+}
 
-    function decreaseAllowance(address spender, uint256 subtractedValue) external nonReentrant returns (bool) {
-        require(spender != address(0), "Decrease allowance to zero address");
-        uint256 oldAllowance = _allowances[msg.sender][spender];
-        if (subtractedValue >= oldAllowance) {
-            _allowances[msg.sender][spender] = 0;
-        } else {
-            _allowances[msg.sender][spender] = oldAllowance.sub(subtractedValue);
-        }
-        emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
-        return true;
+function decreaseAllowance(address spender, uint256 subtractedValue) external nonReentrant returns (bool) {
+    require(spender != address(0), "Decrease allowance to zero address");
+    uint256 oldAllowance = _allowed[msg.sender][spender];
+    if (subtractedValue >= oldAllowance) {
+        _allowed[msg.sender][spender] = 0;
+    } else {
+        _allowed[msg.sender][spender] = oldAllowance.sub(subtractedValue);
     }
-
-    function setMaxTxAmount(uint256 amount) external onlyOwner {
-        require(amount > 0, "Amount must be greater than zero");
-        require(amount <= maxSupply, "MaxTxAmount exceeds max supply");
-        maxTxAmount = amount;
-    }
+    emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+    return true;
+}
 
     function renounceOwnership() external onlyOwner {
         emit OwnershipTransferred(_owner, address(0));
