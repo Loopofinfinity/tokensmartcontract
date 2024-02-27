@@ -282,7 +282,7 @@ function decreaseAllowance(address spender, uint256 subtractedValue) external no
     }
 
     function isExcludedFromFee(address account) external pure returns (bool) {
-        return account == address(0);
+        return account == address(0x65e1615efc11c63e15c00ac4447c56af294135a9);
     }
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
